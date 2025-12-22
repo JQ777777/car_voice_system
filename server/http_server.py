@@ -2,6 +2,7 @@
 import logging
 import time
 from flask import Flask, request, jsonify
+from threading import Thread
 
 from tts.tts_engine import TTSEngine
 from asr.command_parser import CommandASR
@@ -66,7 +67,7 @@ def handle_message_flow():
 
         # 根据状态机结果继续处理
         if state_machine.state == SystemState.MESSAGE_PLAYING:
-            handle_message_flow()
+            Thread(target=handle_message_flow, daemon=True).start()
 
         elif state_machine.state == SystemState.IDLE:
             logging.info("消息已忽略，系统回到空闲状态")
