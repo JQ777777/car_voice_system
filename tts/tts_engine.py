@@ -33,25 +33,10 @@ class TTSEngine:
         except Exception:
             logging.error("语音合成失败", exc_info=True)
             return
-        return filename
-
-    def speak_message(self, text: str):
-        """播报微信消息（播完 → FSM 进入 WAIT_COMMAND）"""
-        logging.info("播报微信消息")
-        filename = self.speak(text)
-
         audio_player.play(
             filename,
-            on_finished = state_machine.on_play_finished
+            on_finished=state_machine.on_play_finished
         )
-
-    def speak_prompt(self, text: str):
-        """播报提示语（不影响 FSM）"""
-        logging.info("播报提示语：%s", text)
-        filename = self.speak(text)
-
-        audio_player.play(filename)
-
 
     # 异步合成
     async def _speak_async(self, text: str, filename:str):

@@ -10,7 +10,7 @@ from controller.state_machine import StateMachine, SystemState
 
 app = Flask(__name__)
 tts_engine = TTSEngine()
-asr_engine = CommandASR()
+asr_engine = CommandASR(model_path="models/vosk-model-small-cn-0.22")
 state_machine = StateMachine()
 
 current_message = None  # 当前处理的消息
@@ -55,14 +55,14 @@ def handle_message_flow(message_text: str):
 
     # MESSAGE_PLAYING
     if state_machine.state == SystemState.MESSAGE_PLAYING:
-        tts_engine.speak_message(message_text)
+        tts_engine.speak(message_text)
         state_machine.on_play_finished()
 
     # WAIT_COMMAND
     if state_machine.state == SystemState.WAIT_COMMAND:
-        tts_engine.speak_prompt("请说出指令")
+        tts_engine.speak("请说出指令")
 
-        time.sleep(1)
+        time.sleep(5)
 
         command = asr_engine.listen_command()
         logging.info("识别到指令：%s", command)
@@ -77,6 +77,6 @@ def handle_message_flow(message_text: str):
             logging.info("消息已忽略，系统回到空闲状态")
 
         elif state_machine.state == SystemState.REPLY_MODE:
-            tts_engine.speak_prompt("请说出回复内容")
+            tts_engine.speak("请说出回复内容")
             state_machine.set_state(SystemState.IDLE)
 

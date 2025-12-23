@@ -1,13 +1,18 @@
-#指令识别模块
+# 指令识别模块（Vosk 本地 ASR）
 import logging
-import speech_recognition as sr # 语音识别库
+import queue
+import sounddevice as sd
+import vosk
+import json
 
-# 语音指令识别模块
 class CommandASR:
-    def __init__(self, language="zh-CN"):
+    def __init__(self, language="zh-CN", model_path="models/vosk-model-small-cn"):
         self.language = language
-        self.recognizer = sr.Recognizer() # 创建语音识别器实例
-        self.microphone = sr.Microphone() # 获取系统麦克风
+
+        # 加载 Vosk 模型
+        logging.info("加载 Vosk 模型：%s", model_path)
+        self.model = vosk.Model(model_path)
+        self.recognizer = vosk.KaldiRecognizer(self.model, 16000)
 
         # 支持的指令映射表
         self.command_map = {
@@ -18,39 +23,53 @@ class CommandASR:
             "退出": "EXIT"
         }
 
-        logging.info("ASR 指令识别模块初始化完成")
+        logging.info("本地 ASR 指令识别模块初始化完成")
 
-    # 监听用户语音并识别指令，return 指令字符串 或 None
     def listen_command(self, timeout=15):
-        logging.info("开始监听语音指令...")
+        """
+        监听用户语音并识别指令，返回指令字符串或 None
+        """
+        logging.info("开始监听语音指令（Vosk）...")
 
-        with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source, duration=10)
-            try:
-                audio = self.recognizer.listen(
-                    source,
-                    timeout=timeout,
-                    phrase_time_limit=3
-                )
-            except sr.WaitTimeoutError:
-                logging.warning("未检测到语音输入")
-                return None
+        # 定义采样参数
+        samplerate = 16000
+        duration = timeout  # 最大监听时间
+        q = queue.Queue()
+
+        def callback(indata, frames, time, status):
+            """音频回调，将数据放入队列"""
+            if status:
+                logging.warning(status)
+            q.put(bytes(indata))
 
         try:
-            text = self.recognizer.recognize_google(audio, language=self.language)
-            logging.info("识别到语音内容：%s", text)
+            with sd.RawInputStream(samplerate=samplerate, blocksize=8000, dtype='int16',
+                                   channels=1, callback=callback):
+                logging.info("请开始说话...")
+                import time
+                start_time = time.time()
+                text = None
 
-            return self._match_command(text)
+                while True:
+                    if time.time() - start_time > duration:
+                        logging.warning("超时未检测到语音")
+                        break
 
-        except sr.UnknownValueError:
-            logging.warning("无法识别语音内容")
-        except sr.RequestError as e:
-            logging.error("ASR 服务请求失败: %s", e)
+                    if not q.empty():
+                        data = q.get()
+                        if self.recognizer.AcceptWaveform(data):
+                            result = json.loads(self.recognizer.Result())
+                            text = result.get("text", "")
+                            if text:
+                                logging.info("识别到语音内容：%s", text)
+                                return self._match_command(text)
+        except Exception as e:
+            logging.error("本地 ASR 监听失败: %s", e)
 
         return None
 
-    # 将识别文本映射为系统指令
     def _match_command(self, text: str):
+        """将识别文本映射为系统指令"""
         for keyword, command in self.command_map.items():
             if keyword in text:
                 logging.info("匹配到指令：%s", command)
