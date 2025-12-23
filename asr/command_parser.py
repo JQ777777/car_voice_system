@@ -21,11 +21,11 @@ class CommandASR:
         logging.info("ASR 指令识别模块初始化完成")
 
     # 监听用户语音并识别指令，return 指令字符串 或 None
-    def listen_command(self, timeout=5):
+    def listen_command(self, timeout=15):
         logging.info("开始监听语音指令...")
 
         with self.microphone as source:
-            self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            self.recognizer.adjust_for_ambient_noise(source, duration=10)
             try:
                 audio = self.recognizer.listen(
                     source,

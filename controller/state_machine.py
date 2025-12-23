@@ -22,6 +22,7 @@ class StateMachine:
 
     # 收到新消息
     def on_message_received(self):
+        logging.info("on_message_received | 当前状态：%s", self.state)
         if self.state == SystemState.IDLE:
             self.set_state(SystemState.MESSAGE_PLAYING)
 

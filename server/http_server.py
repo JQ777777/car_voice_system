@@ -18,7 +18,6 @@ current_message = None  # 当前处理的消息
 # 微信消息接收
 @app.route("/message", methods=["POST"])
 def receive_message():
-    global current_message
     """
     数据格式：
     {
@@ -34,29 +33,34 @@ def receive_message():
 
     sender = data["sender"]
     content = data["content"]
-    current_message = f"来自 {sender} 的微信消息：{content}"
+    message_text = f"来自 {sender} 的微信消息：{content}"
 
     logging.info("收到微信消息 | %s: %s", sender, content)
 
     # 状态：收到消息
     state_machine.on_message_received()
 
-    handle_message_flow()
+    # 启用后台线程处理语音流程
+    Thread(
+        target=handle_message_flow,
+        args=(message_text,),
+        daemon=True
+    ).start()
 
     return jsonify({"status": "ok"})
 
 # 语音交互主流程，由状态机驱动
-def handle_message_flow():
-    global current_message
+def handle_message_flow(message_text: str):
+    logging.info("进入语音流程 | 当前状态：%s", state_machine.state)
 
     # MESSAGE_PLAYING
     if state_machine.state == SystemState.MESSAGE_PLAYING:
-        tts_engine.speak(current_message)
+        tts_engine.speak_message(message_text)
         state_machine.on_play_finished()
 
     # WAIT_COMMAND
     if state_machine.state == SystemState.WAIT_COMMAND:
-        tts_engine.speak("请说出指令")
+        tts_engine.speak_prompt("请说出指令")
 
         time.sleep(1)
 
@@ -67,12 +71,12 @@ def handle_message_flow():
 
         # 根据状态机结果继续处理
         if state_machine.state == SystemState.MESSAGE_PLAYING:
-            Thread(target=handle_message_flow, daemon=True).start()
+            handle_message_flow(message_text)
 
         elif state_machine.state == SystemState.IDLE:
             logging.info("消息已忽略，系统回到空闲状态")
 
         elif state_machine.state == SystemState.REPLY_MODE:
-            tts_engine.speak("请说出回复内容")
+            tts_engine.speak_prompt("请说出回复内容")
             state_machine.set_state(SystemState.IDLE)
 
