@@ -9,9 +9,9 @@ from asr.command_parser import CommandASR
 from controller.state_machine import StateMachine, SystemState
 
 app = Flask(__name__)
-tts_engine = TTSEngine()
 asr_engine = CommandASR(model_path="models/vosk-model-small-cn-0.22")
 state_machine = StateMachine()
+tts_engine = TTSEngine(state_machine)
 
 current_message = None  # 当前处理的消息
 
@@ -56,7 +56,7 @@ def handle_message_flow(message_text: str):
     # MESSAGE_PLAYING
     if state_machine.state == SystemState.MESSAGE_PLAYING:
         tts_engine.speak(message_text)
-        state_machine.on_play_finished()
+        #state_machine.on_play_finished()
 
     # WAIT_COMMAND
     if state_machine.state == SystemState.WAIT_COMMAND:

@@ -1,30 +1,20 @@
 # 测试脚本：模拟微信端发送消息
-import logging
 import requests
-
+import logging
 
 def main():
-    logging.info("开始发送测试微信消息")
+    messages = [
+        {"sender": "小张", "content": "今晚一起吃饭吗？"},
+        {"sender": "小李", "content": "明天早上开会别忘了"},
+        {"sender": "小王", "content": "帮我看看这个代码"},
+        {"sender": "小张", "content": "好的，没问题"}
+    ]
 
     url = "http://127.0.0.1:5001/message"
 
-    data = {
-        "sender": "小张",
-        "content": "今晚一起吃饭吗？"
-    }
-
-    try:
-        resp = requests.post(url, json=data, timeout=5)
-        logging.info("服务器响应状态码：%s", resp.status_code)
-        logging.info("服务器返回内容：%s", resp.json())
-    except Exception:
-        logging.error("发送测试消息失败", exc_info=True)
-
+    for msg in messages:
+        resp = requests.post(url, json=msg)
+        print(resp.json())
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(filename)s:%(lineno)d | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
     main()
