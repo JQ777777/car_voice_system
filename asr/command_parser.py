@@ -16,11 +16,11 @@ class CommandASR:
 
         # 支持的指令映射表
         self.command_map = {
-            "回复": "REPLY",
-            "忽略": "IGNORE",
-            "下一条": "NEXT",
             "重复": "REPEAT",
-            "退出": "EXIT"
+            "回复": "REPLY",         
+            "退出": "EXIT",
+            "暂停": "PAUSE",
+            "继续": "RESUME"
         }
 
         logging.info("本地 ASR 指令识别模块初始化完成")
@@ -79,6 +79,10 @@ class CommandASR:
             return "REPLY"
         elif "退出" in text:
             return "EXIT"
+        elif "暂停" in text:
+            command = "PAUSE"
+        elif "继续" in text:
+            command = "RESUME"
         return None
 
     def _match_command(self, text: str):

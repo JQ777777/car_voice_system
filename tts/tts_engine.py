@@ -15,9 +15,6 @@ class TTSEngine:
     def __init__(self, state_machine, voice="zh-CN-XiaoxiaoNeural"):
         self.voice = voice
         self.audio_player = AudioPlayer(self)
-        self.is_playing = False
-        self.is_paused = False
-        self.current_file = None
         self.state_machine = state_machine
 
         self.queue = queue.Queue()
@@ -35,17 +32,28 @@ class TTSEngine:
 
     def speak(self, text: str):
         """
-        HTTP 线程只负责入队
+        入队 + 播放完成回调
         """
         logging.info("文本入队：%s", text)
-        self.queue.put(text)
+
+        # 定义播放完成回调
+        def on_finished():
+            try:
+                import server.http_server as http_server
+                http_server.last_played_message = text
+                logging.info("记录上一条播放内容：%s", text)
+            except Exception as e:
+                logging.warning("记录 last_played_message 失败: %s", e)
+
+        # 入队
+        self.queue.put((text, on_finished))
 
     def _tts_loop(self):
         """
         单线程顺序执行 TTS
         """
         while True:
-            text = self.queue.get()
+            text, on_finished = self.queue.get()
             filename = f"data/audio/tts_{uuid.uuid4().hex}.mp3"
 
             try:
@@ -53,9 +61,23 @@ class TTSEngine:
                 asyncio.run(self._speak_async(text, filename))
                 logging.info("语音合成完成：%s", filename)
 
+                # 合并两个回调
+                def final_callback():
+                    try:
+                        # ① 记录上一条播放
+                        if on_finished:
+                            on_finished()
+
+                        # ② 状态机回调
+                        self.state_machine.on_play_finished()
+
+                    except Exception as e:
+                        logging.error("播放完成回调异常: %s", e)
+
+                # 传入 audio_player
                 self.audio_player.play(
                     filename,
-                    on_finished=self.state_machine.on_play_finished
+                    on_finished=final_callback
                 )
 
             except Exception:
@@ -71,10 +93,14 @@ class TTSEngine:
         await communicate.save(filename)
 
     def stop(self):
-        logging.info("清空 TTS 队列")
-        while not self.queue.empty():
-            self.queue.get()
-            self.queue.task_done()
-
         self.audio_player.stop()
-        self.is_playing = False
+
+    def pause(self):
+        self.audio_player.pause()
+
+    def resume(self):
+        self.audio_player.resume()
+
+    @property
+    def is_playing(self):
+        return self.audio_player.is_playing

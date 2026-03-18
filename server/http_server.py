@@ -13,10 +13,16 @@ asr_engine = CommandASR(model_path="models/vosk-model-small-cn-0.22")
 state_machine = StateMachine()
 tts_engine = TTSEngine(state_machine)
 
+current_message = None          # 当前消息
+last_played_message = None      # 上一条已播放完成的消息
+message_queue = []              # 消息队列（逻辑层）
+
 def command_listener_loop():
     """
-    持续监听用户语音指令：
+    持续监听用户语音指令（支持打断 + 唤醒词）
     """
+    global current_message, last_played_message
+
     while True:
         try:
             raw_text = asr_engine.listen_text()
@@ -26,6 +32,7 @@ def command_listener_loop():
 
             logging.info("🎤 原始识别：%s", raw_text)
 
+            # 播放时屏蔽非唤醒词（防自我识别）
             if tts_engine.is_playing and "系统" not in raw_text:
                 logging.info("播放中，忽略非唤醒词")
                 continue
@@ -37,17 +44,10 @@ def command_listener_loop():
 
             logging.info("🟢 唤醒词触发")
 
-            # 防误触（长度过滤）
-            # 太长的一般不是指令（比如整句话）
+            # 防误触（过长语句过滤）
             if len(raw_text) > 10:
                 logging.info("语句过长，疑似误识别，忽略")
                 continue
-
-            # 播放提示音
-            # try:
-            #     tts_engine.speak("滴")
-            # except Exception as e:
-            #     logging.warning("提示音播放失败: %s", e)
 
             # 提取指令
             command = asr_engine.parse_command(raw_text)
@@ -58,24 +58,43 @@ def command_listener_loop():
 
             logging.info("执行指令：%s", command)
 
-            # 中断播放
-            tts_engine.stop()
+            # 1. 重复
+            if command == "REPEAT":
+                logging.info("执行：重复上一条")
 
-            # 状态机处理
-            state_machine.on_command(command)
+                if last_played_message:
+                    tts_engine.speak(last_played_message)
 
-            # 执行动作
-            if state_machine.state == SystemState.MESSAGE_PLAYING:
-                logging.info("执行：重复播放")
-                if current_message:
-                    tts_engine.speak(current_message)
+                continue
 
-            elif state_machine.state == SystemState.REPLY_MODE:
-                logging.info("执行：进入回复模式")
+            # 2. 暂停
+            elif command == "PAUSE":
+                logging.info("执行：暂停")
+                tts_engine.pause()
+                continue
+
+            # 3. 继续
+            elif command == "RESUME":
+                logging.info("执行：继续播放")
+                tts_engine.resume()
+                continue
+
+            # 4. 退出（停止一切）
+            elif command == "EXIT":
+                logging.info("执行：退出")
+                tts_engine.stop()
+                state_machine.set_state(SystemState.IDLE)
+                continue
+
+            # 5. 回复（进入模式）
+            elif command == "REPLY":
+                logging.info("执行：回复模式")
+
+                tts_engine.stop()  # 可以中断
+                state_machine.set_state(SystemState.REPLY_MODE)
+
                 tts_engine.speak("请说出回复内容")
-
-            elif state_machine.state == SystemState.IDLE:
-                logging.info("执行：退出，停止交互")
+                continue
 
         except Exception as e:
             logging.error("监听线程异常: %s", e)
@@ -85,8 +104,6 @@ Thread(
     target=command_listener_loop,
     daemon=True
 ).start()
-
-current_message = None  # 当前处理的消息
 
 # 微信消息接收
 @app.route("/message", methods=["POST"])

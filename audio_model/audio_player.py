@@ -11,6 +11,10 @@ class AudioPlayer:
         pygame.mixer.init()
         self.tts_engine = tts_engine
         self.queue = queue.Queue()
+
+        self.is_playing = False
+        self.is_paused = False
+
         self.thread = threading.Thread(target=self._play_loop, daemon=True)
         self.thread.start()
         logging.info("AudioPlayer 初始化完成")
@@ -22,6 +26,7 @@ class AudioPlayer:
     def stop(self):
         logging.info("停止当前播放")
         pygame.mixer.music.stop()
+        self.is_playing = False
 
         # 清空队列（关键！）
         while not self.queue.empty():
@@ -42,8 +47,8 @@ class AudioPlayer:
 
             try:
                 # 开始播放 → 标记为 True
-                self.tts_engine.is_playing = True
-                self.tts_engine.is_paused = False
+                self.is_playing = True
+                self.is_paused = False
 
                 logging.info("开始播放：%s", filename)
 
@@ -67,8 +72,7 @@ class AudioPlayer:
 
             finally:
                 # 播放结束 → 标记为 False
-                self.tts_engine.is_playing = False
-                self.tts_engine.current_file = None
+                self.is_playing = False
 
                 if on_finished:
                     on_finished()
