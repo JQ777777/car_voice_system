@@ -13,6 +13,79 @@ asr_engine = CommandASR(model_path="models/vosk-model-small-cn-0.22")
 state_machine = StateMachine()
 tts_engine = TTSEngine(state_machine)
 
+def command_listener_loop():
+    """
+    持续监听用户语音指令：
+    """
+    while True:
+        try:
+            raw_text = asr_engine.listen_text()
+
+            if not raw_text:
+                continue
+
+            logging.info("🎤 原始识别：%s", raw_text)
+
+            if tts_engine.is_playing and "系统" not in raw_text:
+                logging.info("播放中，忽略非唤醒词")
+                continue
+
+            # 唤醒词检测
+            if "系统" not in raw_text:
+                logging.info("未检测到唤醒词，忽略")
+                continue
+
+            logging.info("🟢 唤醒词触发")
+
+            # 防误触（长度过滤）
+            # 太长的一般不是指令（比如整句话）
+            if len(raw_text) > 10:
+                logging.info("语句过长，疑似误识别，忽略")
+                continue
+
+            # 播放提示音
+            # try:
+            #     tts_engine.speak("滴")
+            # except Exception as e:
+            #     logging.warning("提示音播放失败: %s", e)
+
+            # 提取指令
+            command = asr_engine.parse_command(raw_text)
+
+            if not command:
+                logging.warning("唤醒成功，但未匹配指令")
+                continue
+
+            logging.info("执行指令：%s", command)
+
+            # 中断播放
+            tts_engine.stop()
+
+            # 状态机处理
+            state_machine.on_command(command)
+
+            # 执行动作
+            if state_machine.state == SystemState.MESSAGE_PLAYING:
+                logging.info("执行：重复播放")
+                if current_message:
+                    tts_engine.speak(current_message)
+
+            elif state_machine.state == SystemState.REPLY_MODE:
+                logging.info("执行：进入回复模式")
+                tts_engine.speak("请说出回复内容")
+
+            elif state_machine.state == SystemState.IDLE:
+                logging.info("执行：退出，停止交互")
+
+        except Exception as e:
+            logging.error("监听线程异常: %s", e)
+
+# 🔥 启动监听线程（只启动一次）
+Thread(
+    target=command_listener_loop,
+    daemon=True
+).start()
+
 current_message = None  # 当前处理的消息
 
 # 微信消息接收
@@ -53,30 +126,20 @@ def receive_message():
 def handle_message_flow(message_text: str):
     logging.info("进入语音流程 | 当前状态：%s", state_machine.state)
 
-    # MESSAGE_PLAYING
-    if state_machine.state == SystemState.MESSAGE_PLAYING:
-        tts_engine.speak(message_text)
-        #state_machine.on_play_finished()
-
-    # WAIT_COMMAND
-    if state_machine.state == SystemState.WAIT_COMMAND:
-        tts_engine.speak("请说出指令")
-
-        time.sleep(5)
-
-        command = asr_engine.listen_command()
-        logging.info("识别到指令：%s", command)
-
-        state_machine.on_command(command)
-
-        # 根据状态机结果继续处理
+    try:
+        # 播放消息
         if state_machine.state == SystemState.MESSAGE_PLAYING:
-            handle_message_flow(message_text)
+            tts_engine.speak(message_text)
 
-        elif state_machine.state == SystemState.IDLE:
-            logging.info("消息已忽略，系统回到空闲状态")
+        # 等待指令（只提示，不阻塞）
+        elif state_machine.state == SystemState.WAIT_COMMAND:
+            tts_engine.speak("请说出指令")
 
+        # 回复模式
         elif state_machine.state == SystemState.REPLY_MODE:
             tts_engine.speak("请说出回复内容")
             state_machine.set_state(SystemState.IDLE)
+
+    except Exception as e:
+        logging.error("语音流程异常: %s", e)
 

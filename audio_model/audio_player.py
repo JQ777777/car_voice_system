@@ -7,8 +7,9 @@ import time
 
 
 class AudioPlayer:
-    def __init__(self):
+    def __init__(self, tts_engine):
         pygame.mixer.init()
+        self.tts_engine = tts_engine
         self.queue = queue.Queue()
         self.thread = threading.Thread(target=self._play_loop, daemon=True)
         self.thread.start()
@@ -18,11 +19,32 @@ class AudioPlayer:
         logging.info("音频入队：%s", filename)
         self.queue.put((filename, on_finished))
 
+    def stop(self):
+        logging.info("停止当前播放")
+        pygame.mixer.music.stop()
+
+        # 清空队列（关键！）
+        while not self.queue.empty():
+            self.queue.get()
+            self.queue.task_done()
+    
+    def pause(self):
+        logging.info("暂停播放")
+        self.is_paused = True
+
+    def resume(self):
+        logging.info("恢复播放")
+        self.is_paused = False
+
     def _play_loop(self):
         while True:
             filename, on_finished = self.queue.get()
 
             try:
+                # 开始播放 → 标记为 True
+                self.tts_engine.is_playing = True
+                self.tts_engine.is_paused = False
+
                 logging.info("开始播放：%s", filename)
 
                 pygame.mixer.music.load(filename)
@@ -30,6 +52,12 @@ class AudioPlayer:
 
                 # 等待播放结束
                 while pygame.mixer.music.get_busy():
+                    if self.is_paused:
+                        pygame.mixer.music.pause()
+                        while self.is_paused:
+                            time.sleep(0.1)
+                        pygame.mixer.music.unpause()
+
                     time.sleep(0.1)
 
                 logging.info("播放完成：%s", filename)
@@ -38,6 +66,10 @@ class AudioPlayer:
                 logging.error("播放失败：%s", filename, exc_info=True)
 
             finally:
+                # 播放结束 → 标记为 False
+                self.tts_engine.is_playing = False
+                self.tts_engine.current_file = None
+
                 if on_finished:
                     on_finished()
 

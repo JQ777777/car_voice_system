@@ -25,7 +25,7 @@ class CommandASR:
 
         logging.info("本地 ASR 指令识别模块初始化完成")
 
-    def listen_command(self, timeout=15):
+    def listen_text(self, timeout=15):
         """
         监听用户语音并识别指令，返回指令字符串或 None
         """
@@ -62,10 +62,23 @@ class CommandASR:
                             text = result.get("text", "")
                             if text:
                                 logging.info("识别到语音内容：%s", text)
-                                return self._match_command(text)
+                                return text # 直接返回原始文本
         except Exception as e:
             logging.error("本地 ASR 监听失败: %s", e)
 
+        return None
+    
+    # 指令解析
+    def parse_command(self, text: str):
+        """
+        从文本中解析指令
+        """
+        if "重复" in text:
+            return "REPEAT"
+        elif "回复" in text:
+            return "REPLY"
+        elif "退出" in text:
+            return "EXIT"
         return None
 
     def _match_command(self, text: str):

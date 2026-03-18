@@ -14,7 +14,10 @@ from controller.state_machine import StateMachine
 class TTSEngine:
     def __init__(self, state_machine, voice="zh-CN-XiaoxiaoNeural"):
         self.voice = voice
-        self.audio_player = AudioPlayer()
+        self.audio_player = AudioPlayer(self)
+        self.is_playing = False
+        self.is_paused = False
+        self.current_file = None
         self.state_machine = state_machine
 
         self.queue = queue.Queue()
@@ -66,3 +69,12 @@ class TTSEngine:
             voice=self.voice,
         )
         await communicate.save(filename)
+
+    def stop(self):
+        logging.info("清空 TTS 队列")
+        while not self.queue.empty():
+            self.queue.get()
+            self.queue.task_done()
+
+        self.audio_player.stop()
+        self.is_playing = False
