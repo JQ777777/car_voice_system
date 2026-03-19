@@ -8,73 +8,123 @@ import time
 
 class AudioPlayer:
     def __init__(self, tts_engine):
+        logging.info("AudioPlayer 初始化开始")
         pygame.mixer.init()
+
         self.tts_engine = tts_engine
-        self.queue = queue.Queue()
+        self.queue = queue.PriorityQueue()
 
         self.is_playing = False
         self.is_paused = False
+        self.interrupt_flag = False
+
+        self.current_item = None  # 🔥 当前播放项（用于回滚）
 
         self.thread = threading.Thread(target=self._play_loop, daemon=True)
         self.thread.start()
+
         logging.info("AudioPlayer 初始化完成")
 
-    def play(self, filename: str, on_finished=None):
+    def play(self, filename, text, before_play=None, on_finished=None, priority=False):
+        priority_value = 0 if priority else 2
+
+        self.queue.put((
+            priority_value,
+            time.time(),
+            filename,
+            text,
+            before_play,
+            on_finished
+        ))
+
         logging.info("音频入队：%s", filename)
-        self.queue.put((filename, on_finished))
+
+    def request_interrupt(self):
+        logging.info("请求打断播放")
+        self.interrupt_flag = True
 
     def stop(self):
-        logging.info("停止当前播放")
         pygame.mixer.music.stop()
-        self.is_playing = False
 
-        # 清空队列（关键！）
+    def stop_all(self):
+        self.stop()
         while not self.queue.empty():
-            self.queue.get()
-            self.queue.task_done()
-    
+            try:
+                self.queue.get_nowait()
+                self.queue.task_done()
+            except:
+                break
+
     def pause(self):
-        logging.info("暂停播放")
         self.is_paused = True
 
     def resume(self):
-        logging.info("恢复播放")
         self.is_paused = False
 
     def _play_loop(self):
+        logging.info("播放线程已启动")
+
         while True:
-            filename, on_finished = self.queue.get()
-
             try:
-                # 开始播放 → 标记为 True
-                self.is_playing = True
-                self.is_paused = False
+                self._play_once()
+            except Exception as e:
+                logging.error("播放线程异常: %s", e)
+                time.sleep(1)
 
-                logging.info("开始播放：%s", filename)
+    def _play_once(self):
+        item = self.queue.get()
+        priority, _, filename, text, before_play, on_finished = item
 
-                pygame.mixer.music.load(filename)
-                pygame.mixer.music.play()
+        # 保存当前播放项
+        self.current_item = item
 
-                # 等待播放结束
-                while pygame.mixer.music.get_busy():
-                    if self.is_paused:
-                        pygame.mixer.music.pause()
-                        while self.is_paused:
-                            time.sleep(0.1)
-                        pygame.mixer.music.unpause()
+        self.is_playing = True
+        self.is_paused = False
 
+        if before_play:
+            before_play()
+
+        logging.info("开始播放：%s", filename)
+
+        pygame.mixer.music.load(filename)
+        pygame.mixer.music.play()
+
+        interrupted = False
+
+        while pygame.mixer.music.get_busy():
+            if self.interrupt_flag:
+                logging.info("检测到打断请求")
+
+                pygame.mixer.music.stop()
+                self.interrupt_flag = False
+                interrupted = True
+                break
+
+            if self.is_paused:
+                pygame.mixer.music.pause()
+                while self.is_paused:
                     time.sleep(0.1)
+                pygame.mixer.music.unpause()
 
-                logging.info("播放完成：%s", filename)
+            time.sleep(0.1)
 
-            except Exception:
-                logging.error("播放失败：%s", filename, exc_info=True)
+        # 如果被打断 → 回滚
+        if interrupted:
+            logging.info("回滚当前任务：%s", text)
 
-            finally:
-                # 播放结束 → 标记为 False
-                self.is_playing = False
+            self.queue.put((
+                1,  # 最高优先级
+                time.time(),
+                filename,
+                text,
+                before_play,
+                on_finished
+            ))
+        else:
+            logging.info("播放完成：%s", filename)
 
-                if on_finished:
-                    on_finished()
+            if on_finished:
+                on_finished()
 
-                self.queue.task_done()
+        self.is_playing = False
+        self.queue.task_done()

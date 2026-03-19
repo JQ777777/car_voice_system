@@ -17,6 +17,48 @@ current_message = None          # 当前消息
 last_played_message = None      # 上一条已播放完成的消息
 message_queue = []              # 消息队列（逻辑层）
 
+def extract_command_text(raw_text: str):
+    """
+    只提取“唤醒词后内容”
+    """
+    if "系统" not in raw_text:
+        return None
+
+    return raw_text.split("系统", 1)[-1].strip()
+
+
+def match_command(cmd_text: str):
+    """
+    关键词容错匹配
+    """
+    if not cmd_text:
+        return None
+
+    # 去空格
+    cmd_text = cmd_text.replace(" ", "")
+
+    # 重复（容错）
+    if any(k in cmd_text for k in ["重复", "重", "再来", "再说一遍"]):
+        return "REPEAT"
+
+    # 暂停
+    if any(k in cmd_text for k in ["暂停", "停一下", "别说了"]):
+        return "PAUSE"
+
+    # 继续
+    if any(k in cmd_text for k in ["继续", "恢复", "接着说"]):
+        return "RESUME"
+
+    # 退出
+    if any(k in cmd_text for k in ["退出", "关闭", "结束"]):
+        return "EXIT"
+
+    # 回复
+    if any(k in cmd_text for k in ["回复", "回消息"]):
+        return "REPLY"
+
+    return None
+
 def command_listener_loop():
     """
     持续监听用户语音指令（支持打断 + 唤醒词）
@@ -30,42 +72,56 @@ def command_listener_loop():
             if not raw_text:
                 continue
 
-            logging.info("🎤 原始识别：%s", raw_text)
+            logging.info("原始识别：%s", raw_text)
 
-            # 播放时屏蔽非唤醒词（防自我识别）
+            # 播放时：只允许“包含唤醒词”的语音进入
             if tts_engine.is_playing and "系统" not in raw_text:
                 logging.info("播放中，忽略非唤醒词")
                 continue
 
-            # 唤醒词检测
+            # 必须包含唤醒词
             if "系统" not in raw_text:
                 logging.info("未检测到唤醒词，忽略")
                 continue
 
             logging.info("🟢 唤醒词触发")
 
-            # 防误触（过长语句过滤）
-            if len(raw_text) > 10:
-                logging.info("语句过长，疑似误识别，忽略")
+            # 只取“唤醒词后内容”
+            cmd_text = extract_command_text(raw_text)
+
+            if not cmd_text:
+                logging.warning("唤醒成功，但没有提取到指令内容")
                 continue
 
-            # 提取指令
-            command = asr_engine.parse_command(raw_text)
+            logging.info("提取指令内容：%s", cmd_text)
+
+            # 长度限制（只限制指令部分，不是整句）
+            # if len(cmd_text) > 6:
+            #     logging.warning("指令过长，疑似误识别，忽略")
+            #     continue
+
+            # 关键词容错匹配
+            command = match_command(cmd_text)
 
             if not command:
-                logging.warning("唤醒成功，但未匹配指令")
+                logging.warning("未匹配到有效指令")
                 continue
 
             logging.info("执行指令：%s", command)
 
             # 1. 重复
             if command == "REPEAT":
-                logging.info("执行：重复上一条")
+                logging.info("执行：重复（上一条）")
 
-                if last_played_message:
-                    tts_engine.speak(last_played_message)
+                if tts_engine.last_played_text:
+                    repeat_text = tts_engine.last_played_text
 
-                continue
+                    # 打断（触发回滚）
+                    tts_engine.request_interrupt()
+                    tts_engine.audio_player.request_interrupt()
+
+                    # 插队
+                    tts_engine.speak(repeat_text, priority=True)
 
             # 2. 暂停
             elif command == "PAUSE":
@@ -82,7 +138,7 @@ def command_listener_loop():
             # 4. 退出（停止一切）
             elif command == "EXIT":
                 logging.info("执行：退出")
-                tts_engine.stop()
+                tts_engine.stop_all()
                 state_machine.set_state(SystemState.IDLE)
                 continue
 
