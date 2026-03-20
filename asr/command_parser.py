@@ -20,7 +20,8 @@ class CommandASR:
             "回复": "REPLY",         
             "退出": "EXIT",
             "暂停": "PAUSE",
-            "继续": "RESUME"
+            "继续": "RESUME",
+            "打开": "OPEN"
         }
 
         logging.info("本地 ASR 指令识别模块初始化完成")
@@ -83,6 +84,8 @@ class CommandASR:
             command = "PAUSE"
         elif "继续" in text:
             command = "RESUME"
+        elif "打开" in text:
+            command = "OPEN"
         return None
 
     def _match_command(self, text: str):

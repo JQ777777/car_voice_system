@@ -24,7 +24,10 @@ class TTSEngine:
 
         self.interrupt_flag = False
 
-        # 缓存（核心优化）
+        # 系统总开关
+        self.enabled = True
+
+        # 缓存
         self.text_audio_map = {}
 
         os.makedirs("data/audio", exist_ok=True)
@@ -38,9 +41,14 @@ class TTSEngine:
         logging.info("TTS 引擎初始化完成")
 
     def speak(self, text: str, priority=False):
+        # 系统关闭直接丢弃
+        if not self.enabled:
+            logging.info("系统关闭，丢弃文本：%s", text)
+            return
+
         logging.info("文本入队：%s", text)
 
-        # 如果是高优先级（重复）且已有缓存 → 直接播放
+        # 高优先级 + 命中缓存 → 直接播放（不走TTS）
         if priority and text in self.text_audio_map:
             logging.info("命中缓存，直接播放：%s", text)
 
@@ -53,7 +61,7 @@ class TTSEngine:
             )
             return
 
-        # 统一优先级体系
+        # 优先级体系
         # 0 = 用户指令（重复）
         # 1 = 回滚任务
         # 2 = 普通消息
@@ -73,6 +81,12 @@ class TTSEngine:
         while True:
             priority, _, text = self.queue.get()
 
+            # 系统关闭 → 丢弃任务
+            if not self.enabled:
+                logging.info("系统关闭，丢弃TTS任务：%s", text)
+                self.queue.task_done()
+                continue
+
             filename = f"data/audio/tts_{uuid.uuid4().hex}.mp3"
 
             try:
@@ -80,7 +94,7 @@ class TTSEngine:
 
                 asyncio.run(self._speak_async(text, filename))
 
-                # 如果合成期间被打断 → 不丢任务，重新排队
+                # 合成过程中被打断 → 回滚（不丢）
                 if self.interrupt_flag:
                     logging.info("合成完成但被打断，重新入队：%s", text)
 
@@ -94,9 +108,15 @@ class TTSEngine:
                     self.queue.task_done()
                     continue
 
+                # 系统关闭（双保险）
+                if not self.enabled:
+                    logging.info("系统关闭，丢弃已合成音频：%s", text)
+                    self.queue.task_done()
+                    continue
+
                 logging.info("语音合成完成：%s", filename)
 
-                # 写入缓存（关键）
+                # 写缓存
                 self.text_audio_map[text] = filename
 
                 def before_play(text=text):
@@ -109,7 +129,10 @@ class TTSEngine:
                         logging.info("正确记录上一条：%s", text)
 
                         self.current_playing_text = None
-                        self.state_machine.on_play_finished()
+
+                        # 只有开启状态才触发状态机
+                        if self.enabled:
+                            self.state_machine.on_play_finished()
 
                     except Exception as e:
                         logging.error("播放完成回调异常: %s", e)
@@ -139,6 +162,32 @@ class TTSEngine:
 
     def stop_all(self):
         self.audio_player.stop_all()
+
+    def clear_all(self):
+        """
+        彻底清空系统(EXIT用)
+        """
+        logging.info("清空TTS系统所有任务")
+
+        # 清空TTS队列
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+                self.queue.task_done()
+            except:
+                break
+
+        # 停止播放 + 清空播放队列
+        self.audio_player.stop_all()
+
+    def enable(self):
+        logging.info("TTS系统开启")
+        self.enabled = True
+
+    def disable(self):
+        logging.info("TTS系统关闭")
+        self.enabled = False
+        self.clear_all()
 
     def pause(self):
         self.audio_player.pause()

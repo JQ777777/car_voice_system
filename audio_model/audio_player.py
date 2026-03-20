@@ -18,7 +18,7 @@ class AudioPlayer:
         self.is_paused = False
         self.interrupt_flag = False
 
-        self.current_item = None  # 🔥 当前播放项（用于回滚）
+        self.current_item = None  # 前播放项（用于回滚）
 
         self.thread = threading.Thread(target=self._play_loop, daemon=True)
         self.thread.start()
