@@ -1,6 +1,7 @@
 # http_server.py 消息接收模块
 import logging
-from flask import Flask, request, jsonify
+import json
+from flask import Flask, request, jsonify, Response
 from threading import Thread
 
 from tts.tts_engine import TTSEngine
@@ -141,7 +142,8 @@ def command_listener_loop():
             # 限制reply只能在合理状态触发
             if command == "REPLY" and state_machine.state not in [
                 SystemState.MESSAGE_PLAYING,
-                SystemState.WAIT_COMMAND
+                SystemState.WAIT_COMMAND,
+                SystemState.IDLE
             ]:
                 logging.warning("当前状态不允许进入回复模式")
                 continue
@@ -177,7 +179,7 @@ def command_listener_loop():
                 tts_engine.disable()
                 tts_engine.stop_all()
 
-                state_machine.set_state(SystemState.IDLE)
+                state_machine.turn_off()
 
             elif command == "OPEN":
                 logging.info("执行：打开系统")
@@ -191,11 +193,14 @@ def command_listener_loop():
             elif command == "REPLY":
                 logging.info("执行：回复模式（打断）")
 
-                # 先打断当前播放和TTS
-                tts_engine.request_interrupt()
-                tts_engine.audio_player.request_interrupt()
+                if tts_engine.is_playing:
+                    logging.info("执行打断（正在播放）")
 
-                #tts_engine.interrupt_flag = False
+                    tts_engine.request_interrupt()
+                    tts_engine.audio_player.request_interrupt()
+                else:
+                    logging.info("系统空闲，无需打断")
+
 
                 # 2. 保存当前队列（核心）
                 paused_audio_queue = []
@@ -238,43 +243,6 @@ def command_listener_loop():
 # 启动监听线程
 Thread(target=command_listener_loop, daemon=True).start()
 
-@app.route("/message", methods=["POST"])
-def receive_message():
-    data = request.get_json()
-
-    if not data or "sender" not in data or "content" not in data:
-        logging.warning("收到格式错误的微信消息: %s", data)
-        return jsonify({"status": "error"}), 400
-
-    sender = data["sender"]
-    content = data["content"]
-    message_text = f"来自 {sender} 的微信消息：{content}"
-
-    if state_machine.state in [
-        SystemState.REPLY_MODE_CONTACT,
-        SystemState.REPLY_MODE_CONTENT
-    ]:
-        logging.info("回复中，缓存新消息：%s", message_text)
-        pending_messages.append(message_text)
-        return jsonify({"status": "queued"})
-
-    logging.info("收到微信消息 | %s: %s", sender, content)
-
-    # 系统关闭直接丢弃
-    if not tts_engine.enabled:
-        logging.info("系统关闭，忽略消息：%s", message_text)
-        return jsonify({"status": "ignored"})
-
-    state_machine.on_message_received()
-
-    Thread(
-        target=handle_message_flow,
-        args=(message_text,),
-        daemon=True
-    ).start()
-
-    return jsonify({"status": "ok"})
-
 def handle_message_flow(message_text: str):
     logging.info("进入语音流程 | 当前状态：%s", state_machine.state)
 
@@ -282,8 +250,8 @@ def handle_message_flow(message_text: str):
         if state_machine.state == SystemState.MESSAGE_PLAYING:
             tts_engine.speak(message_text)
 
-        elif state_machine.state == SystemState.WAIT_COMMAND:
-            tts_engine.speak("请说出指令")
+        # elif state_machine.state == SystemState.WAIT_COMMAND:
+        #     tts_engine.speak("请说出指令")
 
         elif state_machine.state == SystemState.REPLY_MODE:
             tts_engine.speak("请说出回复内容")
@@ -291,3 +259,73 @@ def handle_message_flow(message_text: str):
 
     except Exception as e:
         logging.error("语音流程异常: %s", e)
+
+def process_feishu_event(data):
+    try:
+        header = data.get("header", {})
+        event = data.get("event", {})
+
+        if header.get("event_type") != "im.message.receive_v1":
+            return
+
+        message = event.get("message", {})
+        sender = event.get("sender", {})
+
+        content_str = message.get("content", "{}")
+        content_dict = json.loads(content_str)
+
+        text = content_dict.get("text", "")
+        user_id = sender.get("sender_id", {}).get("user_id", "未知用户")
+
+        message_text = f"收到消息：{text}"
+
+        logging.info("飞书消息 | %s: %s", user_id, text)
+
+        # 回复模式中 → 缓存
+        if state_machine.state in [
+            SystemState.REPLY_MODE_CONTACT,
+            SystemState.REPLY_MODE_CONTENT
+        ]:
+            pending_messages.append(message_text)
+            return
+
+        # 系统关闭 → 忽略
+        if not tts_engine.enabled:
+            return
+
+        # 正常播报流程
+        state_machine.on_message_received()
+
+        Thread(
+            target=handle_message_flow,
+            args=(message_text,),
+            daemon=True
+        ).start()
+
+    except Exception as e:
+        logging.error("飞书处理异常: %s", e)
+
+@app.route("/feishu", methods=["POST"])
+def feishu_webhook():
+    raw_data = request.get_data(as_text=True)
+
+    # 只做字符串判断
+    if '"challenge"' in raw_data:
+        data = json.loads(raw_data)
+
+        # 用最原始方式返回
+        return Response(
+            '{"challenge":"' + data["challenge"] + '"}',
+            mimetype="application/json"
+        )
+
+    # 非验证请求
+    try:
+        data = json.loads(raw_data)
+
+        Thread(target=process_feishu_event, args=(data,), daemon=True).start()
+
+        return Response('{"code":0}', mimetype="application/json")
+
+    except:
+        return Response('{"code":-1}', mimetype="application/json")

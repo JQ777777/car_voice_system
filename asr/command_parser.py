@@ -1,4 +1,4 @@
-# 指令识别模块（Vosk 本地 ASR）
+# command_parser.py 指令识别模块（Vosk 本地 ASR）
 import logging
 import queue
 import sounddevice as sd

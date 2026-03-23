@@ -1,4 +1,4 @@
-# 状态机模块
+# state_machine.py 状态机模块
 import logging
 from enum import Enum, auto
 
@@ -39,7 +39,7 @@ class StateMachine:
             logging.info("系统关闭，忽略消息")
             return
 
-        if self.state == SystemState.IDLE:
+        if self.state in [SystemState.IDLE, SystemState.WAIT_COMMAND]:
             self.set_state(SystemState.MESSAGE_PLAYING)
 
     def on_play_finished(self):
@@ -72,9 +72,6 @@ class StateMachine:
 
         elif command == "REPEAT":
             self.set_state(SystemState.MESSAGE_PLAYING)
-
-        elif command == "IGNORE":
-            self.set_state(SystemState.IDLE)
 
         else:
             logging.warning("未知指令：%s", command)

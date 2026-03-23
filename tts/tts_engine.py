@@ -1,4 +1,4 @@
-# 语音合成模块（Edge TTS）
+# tts_engine.py 语音合成模块
 import threading
 import queue
 import asyncio

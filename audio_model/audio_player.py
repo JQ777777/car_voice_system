@@ -1,4 +1,4 @@
-# 音频调度模块
+# audio_player.py 音频调度模块
 import threading
 import queue
 import logging
@@ -125,6 +125,8 @@ class AudioPlayer:
 
             if on_finished:
                 on_finished()
+
+            self.current_item = None
 
         self.is_playing = False
         self.queue.task_done()
