@@ -7,13 +7,16 @@ import os
 import logging
 import uuid
 import time
+import subprocess
+import hashlib
 
 from audio_model.audio_player import AudioPlayer
 
 
 class TTSEngine:
-    def __init__(self, state_machine, voice="zh-CN-XiaoxiaoNeural"):
+    def __init__(self, state_machine, voice="zh-CN-XiaoxiaoNeural", mode="edge"):
         self.voice = voice
+        self.mode = mode
         self.audio_player = AudioPlayer(self)
         self.state_machine = state_machine
 
@@ -22,7 +25,7 @@ class TTSEngine:
         self.current_playing_text = None
         self.last_played_text = None
 
-        self.interrupt_flag = False
+        #self.interrupt_flag = False
 
         # 系统总开关
         self.enabled = True
@@ -40,6 +43,8 @@ class TTSEngine:
 
         logging.info("TTS 引擎初始化完成")
 
+        self._preload_common_texts()
+
     def speak(self, text: str, priority=False):
         # 系统关闭直接丢弃
         if not self.enabled:
@@ -49,7 +54,7 @@ class TTSEngine:
         logging.info("文本入队：%s", text)
 
         # 高优先级 + 命中缓存 → 直接播放（不走TTS）
-        if priority and text in self.text_audio_map:
+        if text in self.text_audio_map:
             logging.info("命中缓存，直接播放：%s", text)
 
             filename = self.text_audio_map[text]
@@ -57,7 +62,7 @@ class TTSEngine:
             self.audio_player.play(
                 filename,
                 text=text,
-                priority=True
+                priority=priority
             )
             return
 
@@ -73,9 +78,9 @@ class TTSEngine:
             text
         ))
 
-    def request_interrupt(self):
-        logging.info("请求打断 TTS")
-        self.interrupt_flag = True
+    # def request_interrupt(self):
+    #     logging.info("请求打断 TTS")
+    #     self.interrupt_flag = True
 
     def _tts_loop(self):
         while True:
@@ -87,26 +92,33 @@ class TTSEngine:
                 self.queue.task_done()
                 continue
 
-            filename = f"data/audio/tts_{uuid.uuid4().hex}.mp3"
+            if self.mode == "edge":
+                filename = f"data/audio/tts_{uuid.uuid4().hex}.mp3"
+            else:
+                filename = f"data/audio/tts_{uuid.uuid4().hex}.wav"
 
             try:
                 logging.info("开始语音合成：%s", text)
 
-                asyncio.run(self._speak_async(text, filename))
+                if self.mode == "edge":
+                    asyncio.run(self._speak_async(text, filename))
+                    output_file = filename
+                else:
+                    output_file = self._speak_piper(text, filename)
 
                 # 合成过程中被打断 → 回滚（不丢）
-                if self.interrupt_flag:
-                    logging.info("合成完成但被打断，重新入队：%s", text)
+                # if self.interrupt_flag:
+                #     logging.info("合成完成但被打断，重新入队：%s", text)
 
-                    self.queue.put((
-                        1,  # 回滚优先级
-                        time.time(),
-                        text
-                    ))
+                #     self.queue.put((
+                #         1,  # 回滚优先级
+                #         time.time(),
+                #         text
+                #     ))
 
-                    self.interrupt_flag = False
-                    self.queue.task_done()
-                    continue
+                #     self.interrupt_flag = False
+                #     self.queue.task_done()
+                #     continue
 
                 # 系统关闭（双保险）
                 if not self.enabled:
@@ -117,7 +129,7 @@ class TTSEngine:
                 logging.info("语音合成完成：%s", filename)
 
                 # 写缓存
-                self.text_audio_map[text] = filename
+                self.text_audio_map[text] = output_file
 
                 def before_play(text=text):
                     self.current_playing_text = text
@@ -138,7 +150,7 @@ class TTSEngine:
                         logging.error("播放完成回调异常: %s", e)
 
                 self.audio_player.play(
-                    filename,
+                    output_file,
                     text=text,
                     before_play=before_play,
                     on_finished=final_callback,
@@ -156,6 +168,89 @@ class TTSEngine:
             voice=self.voice,
         )
         await communicate.save(filename)
+
+    def _speak_piper(self, text: str, filename: str):
+        try:
+            wav_file = filename
+
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+            piper_path = os.path.join(base_dir, "piper", "piper.exe")
+            model_path = os.path.join(base_dir, "models", "piper", "zh_CN-huayan-x_low.onnx")
+            config_path = os.path.join(base_dir, "models", "piper", "zh_CN-huayan-x_low.onnx.json")
+
+            print("====== 调试信息 ======")
+            print("piper_path:", piper_path, os.path.exists(piper_path))
+            print("model_path:", model_path, os.path.exists(model_path))
+            print("config_path:", config_path, os.path.exists(config_path))
+            print("cwd:", os.path.dirname(piper_path))
+            print("=====================")
+
+            command = [
+                piper_path,
+                "--model", model_path,
+                "--config", config_path,
+                "--output_file", wav_file,
+                "--output_format", "wav",
+                "--text", text
+            ]
+
+            print("command:", command)
+
+            # 用 subprocess.run 更稳定
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=os.path.dirname(piper_path)
+            )
+
+            print("returncode:", result.returncode)
+            print("stderr:", result.stderr.decode())
+
+            if result.returncode != 0:
+                raise Exception("Piper 执行失败")
+
+            return wav_file
+
+        except Exception as e:
+            logging.error("Piper TTS失败: %s", e)
+            raise
+
+    def _preload_common_texts(self):
+        if self.mode != "piper":
+            return  # 只对离线模式做预加载
+
+        logging.info("开始预加载常用语音...")
+
+        common_texts = [
+            "系统已开启",
+            "请说联系人",
+            "请说回复内容"
+        ]
+
+        for text in common_texts:
+            try:
+                # 生成安全文件名
+                safe_name = hashlib.md5(text.encode("utf-8")).hexdigest()
+                filename = f"data/audio/pre_{safe_name}.wav"
+
+                # 如果文件已存在 → 直接用
+                if os.path.exists(filename):
+                    logging.info("命中本地缓存文件：%s", text)
+                    self.text_audio_map[text] = filename
+
+                else:
+                    output_file = self._speak_piper(text, filename)
+
+                    if os.path.exists(output_file):
+                        self.text_audio_map[text] = output_file
+                        logging.info("预加载成功：%s", text)
+                    else:
+                        logging.warning("文件未生成，不加入缓存：%s", text)
+
+            except Exception as e:
+                logging.error("预加载失败：%s | %s", text, e)
 
     def stop(self):
         self.audio_player.stop()

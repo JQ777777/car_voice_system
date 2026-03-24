@@ -11,7 +11,7 @@ from controller.state_machine import StateMachine, SystemState
 app = Flask(__name__)
 asr_engine = CommandASR(model_path="models/vosk-model-small-cn-0.22")
 state_machine = StateMachine()
-tts_engine = TTSEngine(state_machine)
+tts_engine = TTSEngine(state_machine, mode="edge")
 
 # 默认关闭系统
 tts_engine.disable()
@@ -159,7 +159,7 @@ def command_listener_loop():
                 if tts_engine.enabled and tts_engine.last_played_text:
                     repeat_text = tts_engine.last_played_text
 
-                    tts_engine.request_interrupt()
+                    #tts_engine.request_interrupt()
                     tts_engine.audio_player.request_interrupt()
                     tts_engine.audio_player.stop()
 
