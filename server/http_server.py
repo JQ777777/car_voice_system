@@ -163,15 +163,30 @@ def command_listener_loop():
                 logging.info("发送给 %s：%s", reply_target, reply_content)
 
                 # 查找回复目标的 open_id
-                target_open_id = None
+                target_chat_id = None
+                target_message_id = None
+
                 for uid, info in user_cache.items():
                     if info["name"] == reply_target:
-                        target_open_id = info.get("open_id")
+                        target_chat_id = info.get("chat_id")
+                        target_message_id = info.get("last_message_id")
                         break
                 
-                if target_open_id:
-                    # 发送消息
-                    success = send_feishu_message(target_open_id, reply_content)
+                if target_chat_id:
+                    target_user = None
+                    for uid, info in user_cache.items():
+                        if info["name"] == reply_target:
+                            target_user = info
+                            break
+
+                    success = send_feishu_message(
+                        target_chat_id,
+                        reply_content,
+                        receive_id_type="chat_id",
+                        reply_to=target_message_id,
+                        mention_user=target_user
+                    )
+
                     if success:
                         tts_engine.speak(f"已回复{reply_target}", priority=True)
                     else:
@@ -494,7 +509,7 @@ def match_user_by_text(text):
             best_score = score
             best_user = user
 
-    # 降低阈值到45，因为"小何"和"小哥"拼音相似度较高
+    
     if best_score < 45:
         logging.warning("❌ 最佳匹配度 %.2f%% 低于阈值 45%%，匹配失败", best_score)
         return None
@@ -527,6 +542,9 @@ def process_feishu_event(data):
         # 提取消息信息
         message = event.get("message", {})
         sender = event.get("sender", {})
+
+        chat_id = message.get("chat_id") 
+        message_id = message.get("message_id")
         
         logging.info("📨 消息对象: %s", json.dumps(message, ensure_ascii=False, indent=2))
         logging.info("👤 发送者对象: %s", json.dumps(sender, ensure_ascii=False, indent=2))
@@ -596,6 +614,8 @@ def process_feishu_event(data):
                             "name": user_name,
                             "pinyin": pinyin_name,
                             "open_id": sender_id,
+                            "chat_id": chat_id,          
+                            "last_message_id": message_id, 
                             "last_seen": current_time
                         }
                         logging.info("更新缓存: %s -> %s", sender_id, user_name)
@@ -608,6 +628,8 @@ def process_feishu_event(data):
                         "name": user_name,
                         "pinyin": pinyin_name,
                         "open_id": sender_id,
+                        "chat_id": chat_id,          
+                        "last_message_id": message_id, 
                         "last_seen": current_time
                     }
                     logging.info("新增缓存: %s -> %s", sender_id, user_name)
@@ -652,9 +674,9 @@ def process_feishu_event(data):
     except Exception as e:
         logging.error("飞书处理异常: %s", e, exc_info=True)
 
-def send_feishu_message(open_id, content):
+def send_feishu_message(receive_id, content, receive_id_type="open_id", reply_to=None, mention_user=None):
     """
-    发送飞书消息到指定用户
+    发送飞书消息（支持 chat_id / open_id / 回复消息）
     """
     ensure_token()
     
@@ -665,17 +687,26 @@ def send_feishu_message(open_id, content):
         "Content-Type": "application/json"
     }
     
+    if mention_user:
+        at_text = f'<at user_id="{mention_user["open_id"]}">{mention_user["name"]}</at> '
+        final_text = at_text + content
+    else:
+        final_text = content
+
     data = {
-        "receive_id": open_id,
+        "receive_id": receive_id,
         "msg_type": "text",
         "content": json.dumps({
-            "text": content
+            "text": final_text
         })
     }
-    
-    # 添加查询参数，指定接收者类型
+
+    # ⭐ 如果是回复某条消息
+    if reply_to:
+        data["reply_to"] = reply_to
+
     params = {
-        "receive_id_type": "open_id"
+        "receive_id_type": receive_id_type
     }
     
     try:
@@ -683,7 +714,7 @@ def send_feishu_message(open_id, content):
         result = resp.json()
         
         if result.get("code") == 0:
-            logging.info("✅ 消息发送成功: %s -> %s", open_id, content)
+            logging.info("✅ 消息发送成功: %s -> %s", receive_id, content)
             return True
         else:
             logging.error("❌ 消息发送失败: %s", result)
