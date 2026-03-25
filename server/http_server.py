@@ -13,6 +13,11 @@ from pypinyin import lazy_pinyin
 from rapidfuzz import fuzz
 
 app = Flask(__name__)
+@app.after_request
+def add_ngrok_skip_header(response):
+    response.headers['ngrok-skip-browser-warning'] = 'true'
+    return response
+
 asr_engine = CommandASR(model_path="models/vosk-model-small-cn-0.22")
 state_machine = StateMachine()
 tts_engine = TTSEngine(state_machine, mode="edge")
@@ -501,113 +506,124 @@ def match_user_by_text(text):
 def process_feishu_event(data):
     current_time = time.time()
     try:
+        logging.info("🚀 开始处理飞书事件")
+        
+        # 打印完整事件数据
+        logging.info("完整事件数据: %s", json.dumps(data, ensure_ascii=False, indent=2))
+        
         header = data.get("header", {})
         event = data.get("event", {})
-
-        if header.get("event_type") != "im.message.receive_v1":
+        
+        event_type = header.get("event_type")
+        logging.info("📌 事件类型: %s", event_type)
+        
+        # 检查是否是消息事件
+        if event_type != "im.message.receive_v1":
+            logging.info("❌ 不是消息事件，忽略 (事件类型: %s)", event_type)
             return
-
+        
+        logging.info("✅ 是消息事件，继续处理")
+        
+        # 提取消息信息
         message = event.get("message", {})
         sender = event.get("sender", {})
-
+        
+        logging.info("📨 消息对象: %s", json.dumps(message, ensure_ascii=False, indent=2))
+        logging.info("👤 发送者对象: %s", json.dumps(sender, ensure_ascii=False, indent=2))
+        
+        # 提取消息内容
         content_str = message.get("content", "{}")
-        content_dict = json.loads(content_str)
-
-        import re
-
-        # 处理 text（统一清洗）
+        logging.info("原始消息内容字符串: %s", content_str)
+        
+        try:
+            content_dict = json.loads(content_str)
+            logging.info("解析后的消息内容: %s", json.dumps(content_dict, ensure_ascii=False))
+        except json.JSONDecodeError as e:
+            logging.error("消息内容JSON解析失败: %s", e)
+            return
+        
+        # 提取文本
         text = content_dict.get("text", "")
-
+        logging.info("📝 原始消息文本: %s", text)
+        
+        # 清理文本
+        import re
+        text_original = text
+        
         # 去掉所有 @mention
         text = re.sub(r'@\S+', '', text)
-
-        # 去掉 mentions（双保险）
-        for mention in content_dict.get("mentions", []):
+        logging.info("清理@mention后: %s", text)
+        
+        # 去掉 mentions
+        mentions = content_dict.get("mentions", [])
+        logging.info("Mentions数量: %d", len(mentions))
+        for mention in mentions:
             key = mention.get("key")
             if key:
                 text = text.replace(key, "")
-
+                logging.info("移除mention key: %s", key)
+        
         # 清理空格
         text = re.sub(r'\s+', ' ', text).strip()
-
-        target_open_id = None
-        target_name = None
-
-        # ========== 添加调试：检查是否是回复消息 ==========
-        if "回复" in text:
-            logging.info("🔍 检测到回复消息: %s", text)
-            
-            # 提取人名
-            name = text.replace("回复", "").strip()
-            logging.info("📝 提取的人名: '%s'", name)
-            
-            # 显示当前缓存的所有用户
-            candidates = get_candidate_users()
-            logging.info("👥 当前缓存的用户列表:")
-            for user in candidates:
-                logging.info("  - open_id: %s, name: %s, pinyin: %s", 
-                           user["open_id"], user["name"], user["pinyin"])
-            
-            # 尝试匹配
-            user = match_user_by_text(name)
-            
-            if user:
-                target_open_id = user["open_id"]
-                target_name = user["name"]
-                logging.info("✅ 匹配成功！用户: %s (open_id: %s), 匹配度分数: 请查看match_user_by_text", 
-                           target_name, target_open_id)
-            else:
-                logging.warning("❌ 未找到匹配用户，提取的人名: '%s'", name)
-                logging.warning("提示: 请检查语音识别结果是否准确，或缓存中是否有该用户")
-
-        # 用户识别
+        logging.info("最终清理后的文本: %s", text)
+        
+        # 如果没有内容，忽略
+        if not text:
+            logging.info("⚠️ 消息内容为空，忽略")
+            return
+        
+        # 获取发送者信息
         sender_id = sender.get("sender_id", {}).get("open_id")
-        user_name = "未知用户"
-
-        if sender_id:
-            # 检查缓存
+        logging.info("发送者 open_id: %s", sender_id)
+        
+        if not sender_id:
+            logging.warning("⚠️ 无法获取发送者ID")
+            user_name = "未知用户"
+        else:
+            # 获取用户名
             if sender_id in user_cache:
                 cached_data = user_cache[sender_id]
                 user_name = cached_data["name"]
                 last_seen = cached_data["last_seen"]
+                logging.info("从缓存获取用户名: %s (缓存时间: %s)", user_name, last_seen)
                 
-                # 检查缓存是否过期
                 if current_time - last_seen > CACHE_EXPIRE:
+                    logging.info("缓存过期，重新获取")
                     user_name = get_user_name(sender_id)
-                    pinyin_name = " ".join(lazy_pinyin(user_name))
-
-                    user_cache[sender_id] = {
-                        "name": user_name,
-                        "pinyin": pinyin_name,
-                        "open_id": sender_id,  # 保存 open_id
-                        "last_seen": current_time
-                    }
+                    if user_name:
+                        pinyin_name = " ".join(lazy_pinyin(user_name))
+                        user_cache[sender_id] = {
+                            "name": user_name,
+                            "pinyin": pinyin_name,
+                            "open_id": sender_id,
+                            "last_seen": current_time
+                        }
+                        logging.info("更新缓存: %s -> %s", sender_id, user_name)
             else:
+                logging.info("缓存未命中，调用API获取用户名")
                 user_name = get_user_name(sender_id)
                 if user_name:
                     pinyin_name = " ".join(lazy_pinyin(user_name))
-                    
                     user_cache[sender_id] = {
                         "name": user_name,
                         "pinyin": pinyin_name,
-                        "open_id": sender_id,  # 保存 open_id
+                        "open_id": sender_id,
                         "last_seen": current_time
                     }
+                    logging.info("新增缓存: %s -> %s", sender_id, user_name)
                 else:
                     user_name = "未知用户"
-                    logging.warning("❌ 无法获取用户姓名: %s", sender_id)
-
-        # 播报文本
-        message_text = f"收到{user_name}的消息：{text}"
+                    logging.warning("无法获取用户名")
         
-        # ========== 添加调试：如果是回复消息，显示处理结果 ==========
-        if "回复" in text:
-            if target_name:
-                logging.info("🎯 回复目标: %s, 将发送回复到: %s", target_name, target_open_id)
-            else:
-                logging.info("🎯 未找到回复目标，等待用户重新输入")
-
-        # 回复模式
+        # 构建播报文本
+        message_text = f"收到{user_name}的消息：{text}"
+        logging.info("🎙️ 最终播报文本: %s", message_text)
+        
+        # 检查系统状态
+        logging.info("当前系统状态: %s", state_machine.state)
+        logging.info("TTS引擎状态: %s", "启用" if tts_engine.enabled else "关闭")
+        
+        # 回复模式处理
         if state_machine.state in [
             SystemState.REPLY_MODE_CONTACT,
             SystemState.REPLY_MODE_CONTENT
@@ -615,22 +631,26 @@ def process_feishu_event(data):
             logging.info("📦 当前在回复模式，消息入队等待处理")
             pending_messages.append(message_text)
             return
-
-        # 系统关闭
+        
+        # 系统关闭检查
         if not tts_engine.enabled:
+            logging.info("🔇 系统已关闭，忽略消息")
             return
-
+        
         # 正常播报
+        logging.info("✅ 进入正常播报流程")
         state_machine.on_message_received()
-
+        
         Thread(
             target=handle_message_flow,
             args=(message_text,),
             daemon=True
         ).start()
-
+        
+        logging.info("✨ 飞书事件处理完成")
+        
     except Exception as e:
-        logging.error("飞书处理异常: %s", e)
+        logging.error("飞书处理异常: %s", e, exc_info=True)
 
 def send_feishu_message(open_id, content):
     """
@@ -672,27 +692,60 @@ def send_feishu_message(open_id, content):
         logging.error("发送消息异常: %s", e)
         return False
 
-@app.route("/feishu", methods=["POST"])
+@app.route("/feishu", methods=["POST", "GET"])
 def feishu_webhook():
+    # 获取请求数据
     raw_data = request.get_data(as_text=True)
-
-    # 只做字符串判断
-    if '"challenge"' in raw_data:
-        data = json.loads(raw_data)
-
-        # 用最原始方式返回
-        return Response(
-            '{"challenge":"' + data["challenge"] + '"}',
-            mimetype="application/json"
-        )
-
-    # 非验证请求
+    
+    logging.info("=" * 60)
+    logging.info("📨 收到飞书请求")
+    logging.info("请求方法: %s", request.method)
+    logging.info("原始数据长度: %d", len(raw_data))
+    
+    # 处理 GET 请求（测试用）
+    if request.method == "GET":
+        return Response('{"status":"ok"}', mimetype="application/json", status=200)
+    
+    # 处理挑战验证（必须立即返回）
+    if "challenge" in raw_data:
+        try:
+            data = json.loads(raw_data)
+            challenge = data.get("challenge")
+            logging.info("🔐 处理URL验证，challenge: %s", challenge)
+            # 必须立即返回，不能有任何延迟
+            return Response(
+                f'{{"challenge":"{challenge}"}}',
+                mimetype="application/json",
+                status=200
+            )
+        except Exception as e:
+            logging.error("验证处理失败: %s", e)
+            return Response('{"code":-1}', mimetype="application/json", status=200)
+    
+    # 处理普通事件（必须快速返回，避免超时）
     try:
+        # 解析数据
         data = json.loads(raw_data)
-
-        Thread(target=process_feishu_event, args=(data,), daemon=True).start()
-
-        return Response('{"code":0}', mimetype="application/json")
-
-    except:
-        return Response('{"code":-1}', mimetype="application/json")
+        
+        # 检查事件类型
+        header = data.get("header", {})
+        event_type = header.get("event_type")
+        
+        logging.info("✅ 收到事件: %s", event_type)
+        
+        # 只处理消息事件
+        if event_type == "im.message.receive_v1":
+            # 异步处理，避免阻塞响应
+            Thread(target=process_feishu_event, args=(data,), daemon=True).start()
+        else:
+            logging.info("忽略非消息事件: %s", event_type)
+        
+        # 立即返回成功响应（必须在3秒内返回）
+        return Response('{"code":0}', mimetype="application/json", status=200)
+        
+    except json.JSONDecodeError as e:
+        logging.error("JSON解析失败: %s", e)
+        return Response('{"code":-1}', mimetype="application/json", status=200)
+    except Exception as e:
+        logging.error("处理事件失败: %s", e, exc_info=True)
+        return Response('{"code":-1}', mimetype="application/json", status=200)
