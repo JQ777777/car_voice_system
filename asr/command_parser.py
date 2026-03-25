@@ -97,3 +97,8 @@ class CommandASR:
 
         logging.warning("未匹配到有效指令")
         return None
+    
+    def reset(self):
+        from vosk import KaldiRecognizer
+        logging.info("重置ASR缓存")
+        self.rec = KaldiRecognizer(self.model, 16000)

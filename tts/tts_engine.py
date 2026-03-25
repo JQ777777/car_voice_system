@@ -11,12 +11,15 @@ import subprocess
 import hashlib
 
 from audio_model.audio_player import AudioPlayer
+from tts.piper_engine import PiperEngine
 
 
 class TTSEngine:
     def __init__(self, state_machine, voice="zh-CN-XiaoxiaoNeural", mode="edge"):
         self.voice = voice
         self.mode = mode
+        if self.mode == "piper":
+            self.piper = PiperEngine()
         self.audio_player = AudioPlayer(self)
         self.state_machine = state_machine
 
@@ -104,7 +107,7 @@ class TTSEngine:
                     asyncio.run(self._speak_async(text, filename))
                     output_file = filename
                 else:
-                    output_file = self._speak_piper(text, filename)
+                    output_file = self.piper.synthesize(text, filename)
 
                 # 合成过程中被打断 → 回滚（不丢）
                 # if self.interrupt_flag:
@@ -171,47 +174,13 @@ class TTSEngine:
 
     def _speak_piper(self, text: str, filename: str):
         try:
-            wav_file = filename
+            output_file = self.piper.synthesize(text)
 
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # 等待文件生成（简单同步）
+            while not os.path.exists(output_file):
+                time.sleep(0.01)
 
-            piper_path = os.path.join(base_dir, "piper", "piper.exe")
-            model_path = os.path.join(base_dir, "models", "piper", "zh_CN-huayan-x_low.onnx")
-            config_path = os.path.join(base_dir, "models", "piper", "zh_CN-huayan-x_low.onnx.json")
-
-            print("====== 调试信息 ======")
-            print("piper_path:", piper_path, os.path.exists(piper_path))
-            print("model_path:", model_path, os.path.exists(model_path))
-            print("config_path:", config_path, os.path.exists(config_path))
-            print("cwd:", os.path.dirname(piper_path))
-            print("=====================")
-
-            command = [
-                piper_path,
-                "--model", model_path,
-                "--config", config_path,
-                "--output_file", wav_file,
-                "--output_format", "wav",
-                "--text", text
-            ]
-
-            print("command:", command)
-
-            # 用 subprocess.run 更稳定
-            result = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=os.path.dirname(piper_path)
-            )
-
-            print("returncode:", result.returncode)
-            print("stderr:", result.stderr.decode())
-
-            if result.returncode != 0:
-                raise Exception("Piper 执行失败")
-
-            return wav_file
+            return output_file
 
         except Exception as e:
             logging.error("Piper TTS失败: %s", e)
@@ -241,7 +210,7 @@ class TTSEngine:
                     self.text_audio_map[text] = filename
 
                 else:
-                    output_file = self._speak_piper(text, filename)
+                    output_file = self.piper.synthesize(text, filename)
 
                     if os.path.exists(output_file):
                         self.text_audio_map[text] = output_file

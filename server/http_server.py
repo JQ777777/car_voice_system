@@ -20,7 +20,7 @@ def add_ngrok_skip_header(response):
 
 asr_engine = CommandASR(model_path="models/vosk-model-small-cn-0.22")
 state_machine = StateMachine()
-tts_engine = TTSEngine(state_machine, mode="edge")
+tts_engine = TTSEngine(state_machine, mode="piper")
 
 APP_ID = "cli_a94a1608a4f9dbb4"
 APP_SECRET = "suqqFJqr1BRmv6s0UsPSndFiFqcKnhE8"
@@ -43,6 +43,8 @@ pending_messages = []
 
 reply_target = None
 reply_content = None
+
+asr_enabled = True
 
 def extract_command_text(raw_text: str):
     if "系统" not in raw_text:
@@ -117,10 +119,37 @@ def add_natural_punctuation(text):
     
     return text
 
+def speak_prompt(text):
+    global asr_enabled
+
+    # 关闭监听
+    asr_enabled = False
+    logging.info("🔇 暂停监听（提示语）")
+
+    # 播放提示语
+    tts_engine.speak(text, priority=True)
+
+    # 等播放结束
+    while tts_engine.is_playing:
+        time.sleep(0.05)
+
+    # 清空ASR缓存（核心）
+    asr_engine.reset()
+
+    # 稍微等一下
+    time.sleep(0.2)
+
+    # 恢复监听
+    asr_enabled = True
+    logging.info("🎤 恢复监听")
+
 def command_listener_loop():
     global reply_target, reply_content, paused_audio_queue
     while True:
         try:
+            if not asr_enabled:
+                time.sleep(0.05)
+                continue
             raw_text = asr_engine.listen_text()
 
             if not raw_text:
@@ -143,7 +172,7 @@ def command_listener_loop():
                     logging.warning("❌ 未匹配到联系人，使用原始识别: %s", reply_target)
 
                 state_machine.set_state(SystemState.REPLY_MODE_CONTENT)
-                tts_engine.speak("请说回复内容")
+                speak_prompt("请说回复内容")
                 continue
 
             if state_machine.state == SystemState.REPLY_MODE_CONTENT:
@@ -203,8 +232,15 @@ def command_listener_loop():
 
                 paused_audio_queue.clear()
 
-                for msg in pending_messages:
-                    tts_engine.speak(msg, priority=False)
+                for part1, part2 in pending_messages:
+                    tts_engine.speak(part1)
+
+                    while tts_engine.is_playing:
+                        time.sleep(0.05)
+
+                    time.sleep(1)
+
+                    tts_engine.speak(part2)
 
                 pending_messages.clear()
 
@@ -340,7 +376,7 @@ def command_listener_loop():
                 state_machine.set_state(SystemState.REPLY_MODE_CONTACT)
 
                 # 插队提示
-                tts_engine.speak("请说联系人", priority=True)
+                speak_prompt("请说联系人")
 
                 continue
 
@@ -351,12 +387,14 @@ def command_listener_loop():
 # 启动监听线程
 Thread(target=command_listener_loop, daemon=True).start()
 
-def handle_message_flow(message_text: str):
+def handle_message_flow(part1:str, part2:str):
     logging.info("进入语音流程 | 当前状态：%s", state_machine.state)
 
     try:
         if state_machine.state == SystemState.MESSAGE_PLAYING:
-            tts_engine.speak(message_text)
+            tts_engine.speak(part1)
+            time.sleep(1)
+            tts_engine.speak(part2)
 
         # elif state_machine.state == SystemState.WAIT_COMMAND:
         #     tts_engine.speak("请说出指令")
@@ -638,8 +676,8 @@ def process_feishu_event(data):
                     logging.warning("无法获取用户名")
         
         # 构建播报文本
-        message_text = f"收到{user_name}的消息：{text}"
-        logging.info("🎙️ 最终播报文本: %s", message_text)
+        message_part1 = f"收到{user_name}的消息"
+        message_part2 = f"内容是:{text}"
         
         # 检查系统状态
         logging.info("当前系统状态: %s", state_machine.state)
@@ -651,7 +689,7 @@ def process_feishu_event(data):
             SystemState.REPLY_MODE_CONTENT
         ]:
             logging.info("📦 当前在回复模式，消息入队等待处理")
-            pending_messages.append(message_text)
+            pending_messages.append((message_part1, message_part2))
             return
         
         # 系统关闭检查
@@ -665,7 +703,7 @@ def process_feishu_event(data):
         
         Thread(
             target=handle_message_flow,
-            args=(message_text,),
+            args=(message_part1, message_part2),
             daemon=True
         ).start()
         
