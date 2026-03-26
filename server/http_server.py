@@ -47,9 +47,9 @@ reply_content = None
 asr_enabled = True
 
 def extract_command_text(raw_text: str):
-    if "系统" not in raw_text:
+    if "小车" not in raw_text:
         return None
-    return raw_text.split("系统", 1)[-1].strip()
+    return raw_text.split("小车", 1)[-1].strip()
 
 def match_command(cmd_text: str):
     if not cmd_text:
@@ -232,15 +232,8 @@ def command_listener_loop():
 
                 paused_audio_queue.clear()
 
-                for part1, part2 in pending_messages:
-                    tts_engine.speak(part1)
-
-                    while tts_engine.is_playing:
-                        time.sleep(0.05)
-
-                    time.sleep(1)
-
-                    tts_engine.speak(part2)
+                for message in pending_messages:
+                    tts_engine.speak(message)
 
                 pending_messages.clear()
 
@@ -253,7 +246,7 @@ def command_listener_loop():
             # 播放中：必须带唤醒词
             if (
                 tts_engine.is_playing
-                and "系统" not in raw_text
+                and "小车" not in raw_text
                 and state_machine.state not in [
                     SystemState.REPLY_MODE_CONTACT,
                     SystemState.REPLY_MODE_CONTENT
@@ -262,7 +255,7 @@ def command_listener_loop():
                 logging.info("播放中，忽略非唤醒词")
                 continue
 
-            if "系统" not in raw_text:
+            if "小车" not in raw_text:
                 logging.info("未检测到唤醒词，忽略")
                 continue
 
@@ -387,21 +380,19 @@ def command_listener_loop():
 # 启动监听线程
 Thread(target=command_listener_loop, daemon=True).start()
 
-def handle_message_flow(part1:str, part2:str):
+def handle_message_flow(message:str):
     logging.info("进入语音流程 | 当前状态：%s", state_machine.state)
 
     try:
         if state_machine.state == SystemState.MESSAGE_PLAYING:
-            tts_engine.speak(part1)
-            time.sleep(1)
-            tts_engine.speak(part2)
+            tts_engine.speak(message)
 
         # elif state_machine.state == SystemState.WAIT_COMMAND:
         #     tts_engine.speak("请说出指令")
 
-        elif state_machine.state == SystemState.REPLY_MODE:
-            tts_engine.speak("请说出回复内容")
-            state_machine.set_state(SystemState.IDLE)
+        # elif state_machine.state == SystemState.REPLY_MODE:
+        #     tts_engine.speak("请说出回复内容")
+        #     state_machine.set_state(SystemState.IDLE)
 
     except Exception as e:
         logging.error("语音流程异常: %s", e)
@@ -676,8 +667,7 @@ def process_feishu_event(data):
                     logging.warning("无法获取用户名")
         
         # 构建播报文本
-        message_part1 = f"收到{user_name}的消息"
-        message_part2 = f"内容是:{text}"
+        message = f"收到{user_name}的消息：{text}"
         
         # 检查系统状态
         logging.info("当前系统状态: %s", state_machine.state)
@@ -689,7 +679,7 @@ def process_feishu_event(data):
             SystemState.REPLY_MODE_CONTENT
         ]:
             logging.info("📦 当前在回复模式，消息入队等待处理")
-            pending_messages.append((message_part1, message_part2))
+            pending_messages.append(message)
             return
         
         # 系统关闭检查
@@ -703,7 +693,7 @@ def process_feishu_event(data):
         
         Thread(
             target=handle_message_flow,
-            args=(message_part1, message_part2),
+            args=(message,),
             daemon=True
         ).start()
         
